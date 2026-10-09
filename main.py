@@ -1,12 +1,12 @@
 import logging
 import threading
 from pathlib import Path
+import os
 from tempfile import TemporaryDirectory
 from urllib.parse import urlparse
 
 import telebot
 import yt_dlp
-from dotenv import dotenv_values
 from yt_dlp.utils import DownloadError
 
 
@@ -26,27 +26,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------
-# Загрузка токена из .env
-# ---------------------------------------------------------
-
-BASE_DIR = Path(__file__).resolve().parent
-ENV_PATH = BASE_DIR / ".env"
-
-if not ENV_PATH.is_file():
-    raise SystemExit(
-        f"Файл .env не найден: {ENV_PATH}\n"
-        "Создайте файл .env рядом со скриптом и добавьте:\n"
-        "TELEGRAM_BOT_TOKEN=ваш_токен"
-    )
-
-config = dotenv_values(ENV_PATH)
-TOKEN = (config.get("TELEGRAM_BOT_TOKEN") or "").strip()
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
 if not TOKEN:
     raise SystemExit(
-        "В файле .env отсутствует TELEGRAM_BOT_TOKEN "
-        "или его значение пустое."
+        "Не задана обязательная переменная окружения "
+        "TELEGRAM_BOT_TOKEN."
     )
 
 
