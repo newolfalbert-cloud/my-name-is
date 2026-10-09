@@ -1,3 +1,4 @@
 pyTelegramBotAPI==4.37.0
 yt-dlp==2026.8.19
-python-dotenv==1.2.4
+cloudconvert==2.1.0
+requests==2.34.2
