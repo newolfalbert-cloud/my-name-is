@@ -11,9 +11,11 @@ import yt_dlp
 from yt_dlp.utils import DownloadError
 
 
+# Maximum file size allowed by Telegram for an audio attachment.
 MAX_AUDIO_BYTES = 49_000_000
 
 
+# Logging configuration.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -21,6 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Read a required environment variable and terminate early if it is missing.
 def get_required_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
@@ -31,6 +34,7 @@ def get_required_env(name: str) -> str:
 
 
 TELEGRAM_BOT_TOKEN = get_required_env("TELEGRAM_BOT_TOKEN")
+# Create the Telegram bot client.
 bot = telebot.TeleBot(
     TELEGRAM_BOT_TOKEN,
     threaded=True,
@@ -39,6 +43,7 @@ bot = telebot.TeleBot(
 download_lock = threading.Lock()
 
 
+# Validate the input as a single YouTube URL and reject malformed or unsupported links.
 def validate_youtube_url(text: str) -> str:
     if not isinstance(text, str):
         raise ValueError("Отправьте ссылку текстовым сообщением.")
@@ -72,6 +77,7 @@ def validate_youtube_url(text: str) -> str:
     return url
 
 
+# Keep the file name safe for Telegram and the filesystem.
 def safe_title(value: object) -> str:
     title = str(value or "Аудио").strip()
     title = "".join(
@@ -79,10 +85,12 @@ def safe_title(value: object) -> str:
     return title[:64] or "Аудио"
 
 
+# Format a byte count into a compact human-readable size value for logs.
 def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes / 1_000_000:.2f} МБ"
 
 
+# Send a message back to the user without crashing the bot if Telegram is unavailable.
 def notify(chat_id: int, text: str) -> None:
     try:
         bot.send_message(chat_id, text)
@@ -90,6 +98,7 @@ def notify(chat_id: int, text: str) -> None:
         logger.exception("Не удалось отправить уведомление")
 
 
+# Download the highest-quality M4A audio stream for the given YouTube video.
 def download_m4a(
     url: str,
     output_dir: Path,
@@ -136,6 +145,7 @@ def download_m4a(
     return audio_path, title, duration
 
 
+# Show a short help message for the bot and explain the file-size limit.
 @bot.message_handler(commands=["start", "help"])
 def start(message) -> None:
     bot.send_message(
@@ -147,6 +157,7 @@ def start(message) -> None:
     )
 
 
+# Process text messages, validate the provided YouTube link, and send the audio back.
 @bot.message_handler(content_types=["text"])
 def handle_link(message) -> None:
     try:
@@ -164,7 +175,8 @@ def handle_link(message) -> None:
         return
 
     try:
-        bot.send_message(message.chat.id, "Скачиваю аудиодорожку M4A. Подождите…")
+        bot.send_message(
+            message.chat.id, "Скачиваю аудиодорожку M4A. Подождите…")
 
         with TemporaryDirectory(prefix="youtube_audio_") as temp_dir:
             temp_path = Path(temp_dir)
@@ -232,21 +244,12 @@ def handle_link(message) -> None:
             download_lock.release()
 
 
-@bot.message_handler(
-    content_types=[
-        "audio",
-        "document",
-        "photo",
-        "video",
-        "voice",
-        "sticker",
-        "animation",
-    ]
-)
 def handle_other_messages(message) -> None:
-    bot.send_message(message.chat.id, "Отправьте текстовую ссылку на видео YouTube.")
+    bot.send_message(
+        message.chat.id, "Отправьте текстовую ссылку на видео YouTube.")
 
 
+# Start the polling loop when the script is executed directly.
 if __name__ == "__main__":
     logger.info("Бот запущен")
     try:
