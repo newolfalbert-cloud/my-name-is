@@ -147,6 +147,11 @@ def download_m4a(
         "retries": 3,
         "fragment_retries": 3,
         "postprocessors": [],
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["default", "web_embedded"],
+            },
+        },
     }
     if cookie_path is not None:
         base_options["cookiefile"] = str(cookie_path)
