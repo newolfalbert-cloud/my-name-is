@@ -42,6 +42,22 @@ bot = telebot.TeleBot(
     num_threads=4,
 )
 download_lock = threading.Lock()
+COOKIE_DIR = Path(__file__).resolve().parent / "cookies"
+COOKIE_FILE_PATH = COOKIE_DIR / "cookies.txt"
+
+
+def ensure_cookie_file() -> Path:
+    COOKIE_DIR.mkdir(parents=True, exist_ok=True)
+    logger.debug("Проверка/создание папки cookies: %s", COOKIE_DIR)
+    if not COOKIE_FILE_PATH.exists():
+        COOKIE_FILE_PATH.touch()
+        logger.debug("Создан файл cookies.txt: %s", COOKIE_FILE_PATH)
+    else:
+        logger.debug("Файл cookies.txt уже существует: %s", COOKIE_FILE_PATH)
+    return COOKIE_FILE_PATH
+
+
+ensure_cookie_file()
 
 
 # Validate the input as a single YouTube URL and reject malformed or unsupported links.
@@ -117,6 +133,7 @@ def notify(chat_id: int, text: str) -> None:
 def download_m4a(
     url: str,
     output_dir: Path,
+    cookie_path: Optional[Path] = None,
 ) -> Tuple[Path, str, Optional[int]]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -131,6 +148,9 @@ def download_m4a(
         "fragment_retries": 3,
         "postprocessors": [],
     }
+    if cookie_path is not None:
+        base_options["cookies"] = str(cookie_path)
+        logger.info("Используются cookies для загрузки: %s", cookie_path)
 
     with yt_dlp.YoutubeDL(base_options) as downloader:
         info = downloader.extract_info(url, download=False)
@@ -242,7 +262,8 @@ def start(message) -> None:
         "аудиодорожку M4A и пришлю её в чат.\n\n"
         "Если дорожка окажется больше 49 МБ, я попробую скачать её "
         "в меньшем битрейте.\n\n"
-        "Отправляйте одну ссылку за раз.",
+        "Отправляйте одну ссылку за раз.\n\n"
+        "Cookies сохраняются локально в папке cookies/cookies.txt.",
     )
 
 
@@ -254,6 +275,8 @@ def handle_link(message) -> None:
     except ValueError as error:
         bot.send_message(message.chat.id, str(error))
         return
+
+    cookie_path = ensure_cookie_file()
 
     lock_acquired = download_lock.acquire(blocking=False)
     if not lock_acquired:
@@ -269,7 +292,11 @@ def handle_link(message) -> None:
 
         with TemporaryDirectory(prefix="youtube_audio_") as temp_dir:
             temp_path = Path(temp_dir)
-            audio_path, title, duration = download_m4a(url, temp_path)
+            audio_path, title, duration = download_m4a(
+                url,
+                temp_path,
+                cookie_path=cookie_path,
+            )
             original_size = audio_path.stat().st_size
 
             logger.info(
