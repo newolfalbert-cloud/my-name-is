@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import threading
 from pathlib import Path
@@ -90,6 +91,20 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes / 1_000_000:.2f} МБ"
 
 
+# Estimate an audio file size from its duration and bitrate.
+def estimate_m4a_size(duration: object, bitrate: object) -> Optional[int]:
+    if (
+        not isinstance(duration, (int, float))
+        or not math.isfinite(duration)
+        or duration <= 0
+        or not isinstance(bitrate, (int, float))
+        or not math.isfinite(bitrate)
+        or bitrate <= 0
+    ):
+        return None
+    return math.ceil(duration * bitrate * 1000 / 8)
+
+
 # Send a message back to the user without crashing the bot if Telegram is unavailable.
 def notify(chat_id: int, text: str) -> None:
     try:
@@ -163,8 +178,30 @@ def download_m4a(
         ),
     )
 
-    audio_path: Optional[Path] = None
+    formats_to_download = []
     for format_info in audio_formats:
+        estimated_size = estimate_m4a_size(
+            duration_value,
+            format_info.get("abr") or format_info.get("tbr"),
+        )
+
+        if estimated_size is not None and estimated_size > MAX_AUDIO_BYTES:
+            logger.info(
+                "Расчетный размер дорожки M4A с битрейтом %s — %s; "
+                "пропускаю её",
+                format_info.get("abr") or format_info.get("tbr"),
+                format_file_size(estimated_size),
+            )
+            continue
+        formats_to_download.append(format_info)
+
+    if not formats_to_download:
+        raise RuntimeError(
+            "Размер каждой доступной дорожки M4A превышает лимит 49 МБ."
+        )
+
+    audio_path: Optional[Path] = None
+    for format_info in formats_to_download:
         options = {**base_options, "format": str(format_info["format_id"])}
         with yt_dlp.YoutubeDL(options) as downloader:
             downloaded_info = downloader.extract_info(url, download=True)
@@ -186,13 +223,10 @@ def download_m4a(
 
         logger.info(
             "Битрейт %s превышает лимит (%s); пробую меньший битрейт",
-            ", ".join(
-                str(format_info.get("abr"))
-                for format_info in audio_formats
-            ),
+            format_info.get("abr") or format_info.get("tbr"),
             format_file_size(file_size),
         )
-        if format_info is not audio_formats[-1]:
+        if format_info is not formats_to_download[-1]:
             audio_path.unlink()
 
     if audio_path is None:
