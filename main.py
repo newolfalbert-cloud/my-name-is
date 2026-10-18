@@ -161,7 +161,6 @@ def download_m4a(
         audio_formats.sort(
             key=lambda format_info: (
                 format_info.get("abr") or 0,
-                format_info.get("tbr") or 0,
             ),
             reverse=True,
         )
@@ -182,14 +181,14 @@ def download_m4a(
     for format_info in audio_formats:
         estimated_size = estimate_m4a_size(
             duration_value,
-            format_info.get("abr") or format_info.get("tbr"),
+            format_info.get("abr"),
         )
 
         if estimated_size is not None and estimated_size > MAX_AUDIO_BYTES:
             logger.info(
                 "Расчетный размер дорожки M4A с битрейтом %s — %s; "
                 "пропускаю её",
-                format_info.get("abr") or format_info.get("tbr"),
+                format_info.get("abr"),
                 format_file_size(estimated_size),
             )
             continue
@@ -223,7 +222,7 @@ def download_m4a(
 
         logger.info(
             "Битрейт %s превышает лимит (%s); пробую меньший битрейт",
-            format_info.get("abr") or format_info.get("tbr"),
+            format_info.get("abr"),
             format_file_size(file_size),
         )
         if format_info is not formats_to_download[-1]:
