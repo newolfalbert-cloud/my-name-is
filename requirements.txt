@@ -1,2 +1,2 @@
 pyTelegramBotAPI==4.37.0
-yt-dlp==2026.8.19
+yt-dlp[default,deno]==2026.8.19

@@ -142,20 +142,25 @@ def download_m4a(
         "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
-        "no_warnings": True,
+        "no_warnings": False,
+        "logger": logger,
         "socket_timeout": 30,
         "retries": 3,
         "fragment_retries": 3,
         "postprocessors": [],
         "extractor_args": {
             "youtube": {
-                "player_client": ["default", "web_embedded"],
+                "player_client": [
+                    "default",
+                    "web_embedded",
+                    "-tv_downgraded",
+                ],
             },
         },
     }
     if cookie_path is not None:
         base_options["cookiefile"] = str(cookie_path)
-        logger.info("Используются cookies для загрузки: %s", cookie_path)
+        logger.debug("Используются cookies для загрузки: %s", cookie_path)
 
     with yt_dlp.YoutubeDL(base_options) as downloader:
         info = downloader.extract_info(url, download=False)
@@ -183,6 +188,22 @@ def download_m4a(
             and format_info.get("vcodec") == "none"
             and format_info.get("format_id")
         ]
+        unique_audio_formats = []
+        seen_audio_signatures = set()
+        for format_info in audio_formats:
+            bitrate = format_info.get("abr")
+            audio_signature = (
+                round(bitrate, 3)
+                if isinstance(bitrate, (int, float))
+                else bitrate,
+                format_info.get("acodec"),
+                format_info.get("asr"),
+                format_info.get("audio_channels"),
+            )
+            if audio_signature not in seen_audio_signatures:
+                seen_audio_signatures.add(audio_signature)
+                unique_audio_formats.append(format_info)
+        audio_formats = unique_audio_formats
         audio_formats.sort(
             key=lambda format_info: (
                 format_info.get("abr") or 0,
@@ -191,7 +212,11 @@ def download_m4a(
         )
 
     if not audio_formats:
-        raise RuntimeError("YouTube не предоставил готовую дорожку M4A.")
+        raise RuntimeError(
+            "YouTube не вернул аудиоформаты. Проверьте в логах "
+            "предупреждение yt-dlp о JavaScript challenge. Установите "
+            "зависимости проекта (yt-dlp[default,deno]) и перезапустите бота."
+        )
 
     logger.info(
         "Доступно %d битрейтов M4A для видео: %s",
