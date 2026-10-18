@@ -98,14 +98,14 @@ def notify(chat_id: int, text: str) -> None:
         logger.exception("Не удалось отправить уведомление")
 
 
-# Download the highest-quality M4A audio stream for the given YouTube video.
+# Try M4A audio formats from highest to lowest bitrate until one fits Telegram.
 def download_m4a(
     url: str,
     output_dir: Path,
 ) -> Tuple[Path, str, Optional[int]]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    options = {
+    base_options = {
         "format": "bestaudio[ext=m4a][vcodec=none]",
         "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
         "noplaylist": True,
@@ -117,8 +117,8 @@ def download_m4a(
         "postprocessors": [],
     }
 
-    with yt_dlp.YoutubeDL(options) as downloader:
-        info = downloader.extract_info(url, download=True)
+    with yt_dlp.YoutubeDL(base_options) as downloader:
+        info = downloader.extract_info(url, download=False)
 
         if not info:
             raise RuntimeError("Не удалось получить информацию о видео.")
@@ -126,7 +126,6 @@ def download_m4a(
             raise ValueError(
                 "Отправьте ссылку на отдельное видео, а не на плейлист.")
 
-        audio_path = Path(downloader.prepare_filename(info))
         title = safe_title(info.get("title"))
         duration_value = info.get("duration")
         duration = (
@@ -135,13 +134,62 @@ def download_m4a(
             else None
         )
 
-    if not audio_path.is_file():
-        raise RuntimeError("Аудиофайл не был загружен.")
-    if audio_path.suffix.lower() != ".m4a":
-        raise RuntimeError("YouTube не предоставил готовую дорожку M4A.")
-    if audio_path.stat().st_size <= 0:
-        raise RuntimeError("Загруженный аудиофайл оказался пустым.")
+        audio_formats = [
+            format_info
+            for format_info in info.get("formats", [])
+            if format_info.get("ext") == "m4a"
+            and format_info.get("vcodec") == "none"
+            and format_info.get("format_id")
+        ]
+        audio_formats.sort(
+            key=lambda format_info: (
+                format_info.get("abr") or 0,
+                format_info.get("tbr") or 0,
+            ),
+            reverse=True,
+        )
 
+    if not audio_formats:
+        raise RuntimeError("YouTube не предоставил готовую дорожку M4A.")
+
+    logger.info(
+        "Доступно %d форматов M4A для видео %s: %s",
+        len(audio_formats),
+        title,
+        ", ".join(format_info["format_id"] for format_info in audio_formats)
+    )
+
+    audio_path: Optional[Path] = None
+    for format_info in audio_formats:
+        options = {**base_options, "format": str(format_info["format_id"])}
+        with yt_dlp.YoutubeDL(options) as downloader:
+            downloaded_info = downloader.extract_info(url, download=True)
+
+            if not downloaded_info:
+                raise RuntimeError("Не удалось скачать аудиодорожку.")
+            audio_path = Path(downloader.prepare_filename(downloaded_info))
+
+        if not audio_path.is_file():
+            raise RuntimeError("Аудиофайл не был загружен.")
+        if audio_path.suffix.lower() != ".m4a":
+            raise RuntimeError("YouTube не предоставил готовую дорожку M4A.")
+
+        file_size = audio_path.stat().st_size
+        if file_size <= 0:
+            raise RuntimeError("Загруженный аудиофайл оказался пустым.")
+        if file_size <= MAX_AUDIO_BYTES:
+            break
+
+        logger.info(
+            "Формат %s превышает лимит (%s); пробую меньший битрейт",
+            format_info["format_id"],
+            format_file_size(file_size),
+        )
+        if format_info is not audio_formats[-1]:
+            audio_path.unlink()
+
+    if audio_path is None:
+        raise RuntimeError("Не удалось скачать аудиодорожку.")
     return audio_path, title, duration
 
 
@@ -152,7 +200,8 @@ def start(message) -> None:
         message.chat.id,
         "Отправьте ссылку на видео YouTube — я скачаю готовую "
         "аудиодорожку M4A и пришлю её в чат.\n\n"
-        "Если файл окажется больше 49 МБ, отправить его не получится.\n\n"
+        "Если дорожка окажется больше 49 МБ, я попробую скачать её "
+        "в меньшем битрейте.\n\n"
         "Отправляйте одну ссылку за раз.",
     )
 
