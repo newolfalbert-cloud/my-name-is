@@ -106,7 +106,7 @@ def download_m4a(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     base_options = {
-        "format": "bestaudio[ext=m4a][vcodec=none]",
+        "format": "all",
         "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
@@ -127,6 +127,8 @@ def download_m4a(
                 "Отправьте ссылку на отдельное видео, а не на плейлист.")
 
         title = safe_title(info.get("title"))
+        logger.info("Начинаю загрузку аудиодорожки M4A для видео: %s", title)
+
         duration_value = info.get("duration")
         duration = (
             max(0, int(duration_value))
@@ -153,10 +155,12 @@ def download_m4a(
         raise RuntimeError("YouTube не предоставил готовую дорожку M4A.")
 
     logger.info(
-        "Доступно %d форматов M4A для видео %s: %s",
+        "Доступно %d битрейтов M4A для видео: %s",
         len(audio_formats),
-        title,
-        ", ".join(format_info["format_id"] for format_info in audio_formats)
+        ", ".join(
+            str(format_info.get("abr"))
+            for format_info in audio_formats
+        ),
     )
 
     audio_path: Optional[Path] = None
@@ -181,8 +185,11 @@ def download_m4a(
             break
 
         logger.info(
-            "Формат %s превышает лимит (%s); пробую меньший битрейт",
-            format_info["format_id"],
+            "Битрейт %s превышает лимит (%s); пробую меньший битрейт",
+            ", ".join(
+                str(format_info.get("abr"))
+                for format_info in audio_formats
+            ),
             format_file_size(file_size),
         )
         if format_info is not audio_formats[-1]:
@@ -246,10 +253,6 @@ def handle_link(message) -> None:
                 )
                 return
 
-            final_size = audio_path.stat().st_size
-            if final_size <= 0:
-                raise RuntimeError("Файл не соответствует лимиту Telegram.")
-
             bot.send_chat_action(message.chat.id, "upload_audio")
 
             with audio_path.open("rb") as audio_file:
@@ -267,7 +270,7 @@ def handle_link(message) -> None:
 
             logger.info(
                 "Аудио размером %s отправлено в чат %s",
-                format_file_size(final_size),
+                format_file_size(original_size),
                 message.chat.id,
             )
 
@@ -286,7 +289,7 @@ def handle_link(message) -> None:
         logger.exception("Непредвиденная ошибка")
         notify(
             message.chat.id,
-            "Произошла непредвиденная ошибка. Подробности записаны в логах.",
+            "Произошла непредвиденная ошибка.",
         )
     finally:
         if lock_acquired:
