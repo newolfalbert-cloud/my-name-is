@@ -149,7 +149,7 @@ def download_m4a(
         "postprocessors": [],
     }
     if cookie_path is not None:
-        base_options["cookies"] = str(cookie_path)
+        base_options["cookiefile"] = str(cookie_path)
         logger.info("Используются cookies для загрузки: %s", cookie_path)
 
     with yt_dlp.YoutubeDL(base_options) as downloader:
