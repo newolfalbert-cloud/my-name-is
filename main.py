@@ -1,5 +1,4 @@
 import logging
-import math
 import os
 import threading
 from pathlib import Path
@@ -99,26 +98,18 @@ def safe_title(value: object) -> str:
     title = str(value or "Аудио").strip()
     title = "".join(
         character for character in title if character.isprintable())
-    return title[:64] or "Аудио"
+    if len(title) > 64:
+        truncated_title = title[:64]
+        if not truncated_title[-1].isspace() and not title[64].isspace():
+            words = truncated_title.split()
+            truncated_title = " ".join(words[:-1]) if len(words) > 1 else ""
+        title = truncated_title.strip()
+    return title or "Аудио"
 
 
 # Format a byte count into a compact human-readable size value for logs.
 def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes / 1_000_000:.2f} МБ"
-
-
-# Estimate an audio file size from its duration and bitrate.
-def estimate_m4a_size(duration: object, bitrate: object) -> Optional[int]:
-    if (
-        not isinstance(duration, (int, float))
-        or not math.isfinite(duration)
-        or duration <= 0
-        or not isinstance(bitrate, (int, float))
-        or not math.isfinite(bitrate)
-        or bitrate <= 0
-    ):
-        return None
-    return math.ceil(duration * bitrate * 1000 / 8)
 
 
 # Send a message back to the user without crashing the bot if Telegram is unavailable.
@@ -129,19 +120,19 @@ def notify(chat_id: int, text: str) -> None:
         logger.exception("Не удалось отправить уведомление")
 
 
-# Try M4A audio formats from highest to lowest bitrate until one fits Telegram.
-def download_m4a(
+# Download the lowest-quality audio-only format.
+def download_audio(
     url: str,
     output_dir: Path,
     cookie_path: Optional[Path] = None,
 ) -> Tuple[Path, str, Optional[int]]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    base_options = {
-        "format": "all",
+    options = {
+        "format": "worst*[vcodec=none]",
         "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
         "noplaylist": True,
-        "quiet": True,
+        "quiet": False,
         "no_warnings": False,
         "logger": logger,
         "socket_timeout": 30,
@@ -159,127 +150,40 @@ def download_m4a(
         },
     }
     if cookie_path is not None:
-        base_options["cookiefile"] = str(cookie_path)
+        options["cookiefile"] = str(cookie_path)
         logger.debug("Используются cookies для загрузки: %s", cookie_path)
 
-    with yt_dlp.YoutubeDL(base_options) as downloader:
-        info = downloader.extract_info(url, download=False)
+    logger.info("Начинаю загрузку аудиодорожки из видео: %s", url)
+    with yt_dlp.YoutubeDL(options) as downloader:
+        video_info = downloader.extract_info(url, download=True)
 
-        if not info:
-            raise RuntimeError("Не удалось получить информацию о видео.")
-        if info.get("_type") in {"playlist", "multi_video"}:
+        if not video_info:
+            raise RuntimeError("Не удалось скачать аудиодорожку.")
+        if video_info.get("_type") in {"playlist", "multi_video"}:
             raise ValueError(
                 "Отправьте ссылку на отдельное видео, а не на плейлист.")
 
-        title = safe_title(info.get("title"))
-        logger.info("Начинаю загрузку аудиодорожки M4A для видео: %s", title)
-
-        duration_value = info.get("duration")
-        duration = (
-            max(0, int(duration_value))
-            if isinstance(duration_value, (int, float))
-            else None
-        )
-
-        audio_formats = [
-            format_info
-            for format_info in info.get("formats", [])
-            if format_info.get("ext") == "m4a"
-            and format_info.get("vcodec") == "none"
-            and format_info.get("format_id")
-        ]
-        unique_audio_formats = []
-        seen_audio_signatures = set()
-        for format_info in audio_formats:
-            bitrate = format_info.get("abr")
-            audio_signature = (
-                round(bitrate, 3)
-                if isinstance(bitrate, (int, float))
-                else bitrate,
-                format_info.get("acodec"),
-                format_info.get("asr"),
-                format_info.get("audio_channels"),
-            )
-            if audio_signature not in seen_audio_signatures:
-                seen_audio_signatures.add(audio_signature)
-                unique_audio_formats.append(format_info)
-        audio_formats = unique_audio_formats
-        audio_formats.sort(
-            key=lambda format_info: (
-                format_info.get("abr") or 0,
-            ),
-            reverse=True,
-        )
-
-    if not audio_formats:
-        raise RuntimeError(
-            "YouTube не вернул аудиоформаты. Проверьте в логах "
-            "предупреждение yt-dlp о JavaScript challenge. Установите "
-            "зависимости проекта (yt-dlp[default,deno]) и перезапустите бота."
-        )
+        audio_path = Path(downloader.prepare_filename(video_info))
 
     logger.info(
-        "Доступно %d битрейтов M4A для видео: %s",
-        len(audio_formats),
-        ", ".join(
-            str(format_info.get("abr"))
-            for format_info in audio_formats
-        ),
+        "Загружена аудиодорожка из видео: %s, размер %s",
+        url,
+        format_file_size(audio_path.stat().st_size),
     )
 
-    formats_to_download = []
-    for format_info in audio_formats:
-        estimated_size = estimate_m4a_size(
-            duration_value,
-            format_info.get("abr"),
-        )
+    title = safe_title(video_info.get("title"))
+    duration_value = video_info.get("duration")
+    duration = (
+        max(0, int(duration_value))
+        if isinstance(duration_value, (int, float))
+        else None
+    )
 
-        if estimated_size is not None and estimated_size > MAX_AUDIO_BYTES:
-            logger.info(
-                "Расчетный размер дорожки M4A с битрейтом %s — %s; "
-                "пропускаю её",
-                format_info.get("abr"),
-                format_file_size(estimated_size),
-            )
-            continue
-        formats_to_download.append(format_info)
+    if not audio_path.is_file():
+        raise RuntimeError("Аудиофайл не был загружен.")
+    if audio_path.stat().st_size <= 0:
+        raise RuntimeError("Загруженный аудиофайл оказался пустым.")
 
-    if not formats_to_download:
-        raise RuntimeError(
-            "Размер каждой доступной дорожки M4A превышает лимит 49 МБ."
-        )
-
-    audio_path: Optional[Path] = None
-    for format_info in formats_to_download:
-        options = {**base_options, "format": str(format_info["format_id"])}
-        with yt_dlp.YoutubeDL(options) as downloader:
-            downloaded_info = downloader.extract_info(url, download=True)
-
-            if not downloaded_info:
-                raise RuntimeError("Не удалось скачать аудиодорожку.")
-            audio_path = Path(downloader.prepare_filename(downloaded_info))
-
-        if not audio_path.is_file():
-            raise RuntimeError("Аудиофайл не был загружен.")
-        if audio_path.suffix.lower() != ".m4a":
-            raise RuntimeError("YouTube не предоставил готовую дорожку M4A.")
-
-        file_size = audio_path.stat().st_size
-        if file_size <= 0:
-            raise RuntimeError("Загруженный аудиофайл оказался пустым.")
-        if file_size <= MAX_AUDIO_BYTES:
-            break
-
-        logger.info(
-            "Битрейт %s превышает лимит (%s); пробую меньший битрейт",
-            format_info.get("abr"),
-            format_file_size(file_size),
-        )
-        if format_info is not formats_to_download[-1]:
-            audio_path.unlink()
-
-    if audio_path is None:
-        raise RuntimeError("Не удалось скачать аудиодорожку.")
     return audio_path, title, duration
 
 
@@ -289,9 +193,8 @@ def start(message) -> None:
     bot.send_message(
         message.chat.id,
         "Отправьте ссылку на видео YouTube — я скачаю готовую "
-        "аудиодорожку M4A и пришлю её в чат.\n\n"
-        "Если дорожка окажется больше 49 МБ, я попробую скачать её "
-        "в меньшем битрейте.\n\n"
+        "аудиодорожку и пришлю её в чат.\n\n"
+        "Если дорожка окажется больше 49 МБ, отправить её не получится.\n\n"
         "Отправляйте одну ссылку за раз.\n\n"
         "Cookies сохраняются локально в папке cookies/cookies.txt.",
     )
@@ -318,22 +221,16 @@ def handle_link(message) -> None:
 
     try:
         bot.send_message(
-            message.chat.id, "Скачиваю аудиодорожку M4A. Подождите…")
+            message.chat.id, "Скачиваю аудиодорожку. Подождите…")
 
         with TemporaryDirectory(prefix="youtube_audio_") as temp_dir:
             temp_path = Path(temp_dir)
-            audio_path, title, duration = download_m4a(
+            audio_path, title, duration = download_audio(
                 url,
                 temp_path,
                 cookie_path=cookie_path,
             )
             original_size = audio_path.stat().st_size
-
-            logger.info(
-                "Загружен %s, размер %s",
-                audio_path.name,
-                format_file_size(original_size),
-            )
 
             if original_size > MAX_AUDIO_BYTES:
                 notify(
@@ -350,7 +247,7 @@ def handle_link(message) -> None:
                     "chat_id": message.chat.id,
                     "audio": audio_file,
                     "title": title,
-                    "caption": "Аудиодорожка M4A из видео YouTube",
+                    "caption": "Аудиодорожка из видео YouTube",
                     "timeout": 300,
                 }
                 if duration is not None:
@@ -359,8 +256,8 @@ def handle_link(message) -> None:
                 bot.send_audio(**send_options)
 
             logger.info(
-                "Аудио размером %s отправлено в чат %s",
-                format_file_size(original_size),
+                "Аудиодорожка из видео: %s, отправлена в чат: %s",
+                url,
                 message.chat.id,
             )
 
@@ -368,8 +265,8 @@ def handle_link(message) -> None:
         logger.exception("Ошибка yt-dlp")
         notify(
             message.chat.id,
-            "Не удалось скачать M4A. Видео может быть недоступно "
-            "или не иметь подходящей дорожки.",
+            "Не удалось скачать аудио. Видео может быть недоступно "
+            "или не иметь аудиодорожки.",
         )
 
     except (ValueError, RuntimeError) as error:
