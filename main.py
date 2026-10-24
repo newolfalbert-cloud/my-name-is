@@ -1,11 +1,13 @@
 import logging
 import os
+import subprocess
 import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
+import imageio_ffmpeg
 import telebot
 import yt_dlp
 from yt_dlp.utils import DownloadError
@@ -13,6 +15,8 @@ from yt_dlp.utils import DownloadError
 
 # Maximum file size allowed by Telegram for an audio attachment.
 MAX_AUDIO_BYTES = 49_000_000
+TARGET_COMPRESSED_BYTES = 48_000_000
+MP3_BITRATES_KBPS = (128, 112, 96, 80, 64, 56, 48, 40, 32, 24, 16, 8)
 
 
 # Logging configuration.
@@ -112,6 +116,64 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes / 1_000_000:.2f} МБ"
 
 
+# Re-encode oversized audio as MP3 and verify that it fits Telegram's limit.
+def compress_audio(audio_path: Path, duration: Optional[int]) -> Path:
+    try:
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    except RuntimeError as error:
+        raise RuntimeError(
+            "Не удалось найти ffmpeg для сжатия аудио."
+        ) from error
+
+    output_path = audio_path.with_name(f"{audio_path.stem}_compressed.mp3")
+    max_bitrate = 128
+    if duration is not None and duration > 0:
+        max_bitrate = min(
+            max_bitrate,
+            int(TARGET_COMPRESSED_BYTES * 8 / duration / 1000),
+        )
+    bitrates = [
+        bitrate for bitrate in MP3_BITRATES_KBPS if bitrate <= max_bitrate
+    ]
+    if not bitrates:
+        bitrates = [MP3_BITRATES_KBPS[-1]]
+
+    for bitrate in bitrates:
+        result = subprocess.run(
+            [
+                ffmpeg_path,
+                "-y",
+                "-i",
+                str(audio_path),
+                "-vn",
+                "-codec:a",
+                "libmp3lame",
+                "-b:a",
+                f"{bitrate}k",
+                str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.error("Ошибка ffmpeg: %s", result.stderr[-1000:])
+            raise RuntimeError("Не удалось сжать аудиодорожку.")
+
+        compressed_size = output_path.stat().st_size
+        logger.info(
+            "Сжатие аудио: битрейт %s кбит/с, размер %s",
+            bitrate,
+            format_file_size(compressed_size),
+        )
+        if compressed_size <= MAX_AUDIO_BYTES:
+            return output_path
+
+    raise RuntimeError(
+        "Не удалось сжать аудиодорожку до размера не более 49 МБ."
+    )
+
+
 # Send a message back to the user without crashing the bot if Telegram is unavailable.
 def notify(chat_id: int, text: str) -> None:
     try:
@@ -187,16 +249,16 @@ def download_audio(
     return audio_path, title, duration
 
 
-# Show a short help message for the bot and explain the file-size limit.
+# Show a short help message for the bot and explain oversized audio compression.
 @bot.message_handler(commands=["start", "help"])
 def start(message) -> None:
     bot.send_message(
         message.chat.id,
         "Отправьте ссылку на видео YouTube — я скачаю готовую "
         "аудиодорожку и пришлю её в чат.\n\n"
-        "Если дорожка окажется больше 49 МБ, отправить её не получится.\n\n"
-        "Отправляйте одну ссылку за раз.\n\n"
-        "Cookies сохраняются локально в папке cookies/cookies.txt.",
+        "Если дорожка окажется больше 49 МБ, я попробую сжать её перед "
+        "отправкой.\n\n"
+        "Отправляйте одну ссылку за раз.\n\n",
     )
 
 
@@ -235,10 +297,9 @@ def handle_link(message) -> None:
             if original_size > MAX_AUDIO_BYTES:
                 notify(
                     message.chat.id,
-                    "Видео слишком большое: аудиодорожка превышает 49 МБ. "
-                    "Отправьте ссылку на более короткое видео.",
+                    "Аудиодорожка больше 49 МБ. Сжимаю перед отправкой…",
                 )
-                return
+                audio_path = compress_audio(audio_path, duration)
 
             bot.send_chat_action(message.chat.id, "upload_audio")
 
