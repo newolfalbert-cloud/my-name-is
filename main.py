@@ -1,13 +1,13 @@
 import logging
 import os
-import shutil
 import subprocess
 import threading
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
+import imageio_ffmpeg
 import telebot
 import yt_dlp
 from yt_dlp.utils import DownloadError
@@ -38,7 +38,13 @@ def get_required_env(name: str) -> str:
 
 
 TELEGRAM_BOT_TOKEN = get_required_env("TELEGRAM_BOT_TOKEN")
-YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES")
+TELEGRAM_ADMIN_ID_VALUE = os.getenv("TELEGRAM_ADMIN_ID", "").strip()
+try:
+    TELEGRAM_ADMIN_ID = (
+        int(TELEGRAM_ADMIN_ID_VALUE) if TELEGRAM_ADMIN_ID_VALUE else None
+    )
+except ValueError as error:
+    raise SystemExit("TELEGRAM_ADMIN_ID должен быть числовым Telegram ID.") from error
 # Create the Telegram bot client.
 bot = telebot.TeleBot(
     TELEGRAM_BOT_TOKEN,
@@ -46,6 +52,9 @@ bot = telebot.TeleBot(
     num_threads=4,
 )
 download_lock = threading.Lock()
+COOKIE_DIR = Path(__file__).resolve().parent / "cookies"
+COOKIE_FILE_PATH = COOKIE_DIR / "cookies.txt"
+MAX_COOKIE_FILE_BYTES = 1_000_000
 
 
 # Validate the input as a single YouTube URL and reject malformed or unsupported links.
@@ -103,12 +112,7 @@ def format_file_size(size_bytes: int) -> str:
 
 # Re-encode oversized audio as MP3 and verify that it fits Telegram's limit.
 def compress_audio(audio_path: Path, duration: Optional[int]) -> Path:
-    ffmpeg_path = shutil.which("ffmpeg")
-    if ffmpeg_path is None:
-        raise RuntimeError(
-            "Для сжатия аудио требуется установленный ffmpeg, "
-            "добавленный в PATH."
-        )
+    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
 
     output_path = audio_path.with_name(f"{audio_path.stem}_compressed.mp3")
     max_bitrate = 128
@@ -171,7 +175,7 @@ def notify(chat_id: int, text: str) -> None:
 def download_audio(
     url: str,
     output_dir: Path,
-    cookie_data: Optional[str] = None,
+    cookie_path: Optional[Path] = None,
 ) -> Tuple[Path, str, Optional[int]]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -196,11 +200,9 @@ def download_audio(
             },
         },
     }
-    if cookie_data and cookie_data.strip():
-        cookie_path = output_dir / "cookies.txt"
-        cookie_path.write_text(cookie_data, encoding="utf-8")
+    if cookie_path is not None and cookie_path.is_file():
         options["cookiefile"] = str(cookie_path)
-        logger.debug("Используются cookies из YOUTUBE_COOKIES")
+        logger.debug("Используется файл cookies")
 
     logger.info("Начинаю загрузку аудиодорожки из видео: %s", url)
     with yt_dlp.YoutubeDL(options) as downloader:
@@ -245,8 +247,128 @@ def start(message) -> None:
         "аудиодорожку и пришлю её в чат.\n\n"
         "Если дорожка окажется больше 49 МБ, я попробую сжать её перед "
         "отправкой.\n\n"
-        "Отправляйте одну ссылку за раз.\n\n",
+        "Отправляйте одну ссылку за раз.\n\n"
+        "Чтобы обновить cookies YouTube, используйте команду /cookies.",
     )
+
+
+def validate_cookie_data(cookie_data: str) -> None:
+    has_cookie = False
+    for line in cookie_data.splitlines():
+        if not line or (
+            line.startswith("#") and not line.startswith("#HttpOnly_")
+        ):
+            continue
+        if len(line.split("\t")) != 7:
+            raise ValueError(
+                "Нужен файл cookies в формате Netscape с разделителями "
+                "табуляцией."
+            )
+        has_cookie = True
+
+    if not has_cookie:
+        raise ValueError("В файле не найдены cookies.")
+
+
+def save_cookie_data(cookie_data: str) -> None:
+    validate_cookie_data(cookie_data)
+    COOKIE_DIR.mkdir(parents=True, exist_ok=True)
+
+    temporary_path: Optional[Path] = None
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=COOKIE_DIR,
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(cookie_data)
+        os.replace(temporary_path, COOKIE_FILE_PATH)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+@bot.message_handler(commands=["cookies"])
+def request_cookies(message) -> None:
+    if message.chat.type != "private":
+        bot.send_message(
+            message.chat.id,
+            "Для безопасности отправьте команду /cookies в личном чате с ботом.",
+        )
+        return
+
+    if TELEGRAM_ADMIN_ID is None:
+        bot.send_message(
+            message.chat.id,
+            "Команда отключена. Настройте TELEGRAM_ADMIN_ID для владельца бота.",
+        )
+        return
+    if message.from_user.id != TELEGRAM_ADMIN_ID:
+        bot.send_message(message.chat.id, "Команда доступна только владельцу бота.")
+        return
+
+    prompt = bot.send_message(
+        message.chat.id,
+        "Пришлите cookies текстом или файлом .txt в формате Netscape. "
+        "Для отмены отправьте /cancel.",
+    )
+    bot.register_next_step_handler(prompt, receive_cookies)
+
+
+def receive_cookies(message) -> None:
+    if (
+        TELEGRAM_ADMIN_ID is None
+        or message.from_user.id != TELEGRAM_ADMIN_ID
+    ):
+        bot.send_message(message.chat.id, "Команда доступна только владельцу бота.")
+        return
+
+    if message.content_type == "text" and message.text.strip() == "/cancel":
+        bot.send_message(message.chat.id, "Загрузка cookies отменена.")
+        return
+
+    try:
+        if message.content_type == "document":
+            document = message.document
+            if (
+                not document.file_name
+                or Path(document.file_name).suffix.lower() != ".txt"
+            ):
+                raise ValueError("Пришлите cookies-файл с расширением .txt.")
+            if (
+                document.file_size is not None
+                and document.file_size > MAX_COOKIE_FILE_BYTES
+            ):
+                raise ValueError("Файл cookies слишком большой.")
+
+            file_info = bot.get_file(document.file_id)
+            file_data = bot.download_file(file_info.file_path)
+            if len(file_data) > MAX_COOKIE_FILE_BYTES:
+                raise ValueError("Файл cookies слишком большой.")
+            cookie_data = file_data.decode("utf-8-sig")
+        elif message.content_type == "text":
+            cookie_data = message.text
+            if len(cookie_data.encode("utf-8")) > MAX_COOKIE_FILE_BYTES:
+                raise ValueError("Текст cookies слишком большой.")
+        else:
+            raise ValueError("Пришлите cookies текстом или файлом .txt.")
+
+        save_cookie_data(cookie_data)
+    except (UnicodeDecodeError, ValueError) as error:
+        bot.send_message(message.chat.id, f"Не удалось сохранить cookies: {error}")
+        return
+    except Exception:
+        logger.exception("Не удалось сохранить cookies")
+        bot.send_message(
+            message.chat.id,
+            "Не удалось сохранить cookies из-за внутренней ошибки.",
+        )
+        return
+
+    bot.send_message(message.chat.id, "Cookies сохранены.")
 
 
 # Process text messages, validate the provided YouTube link, and send the audio back.
@@ -275,7 +397,7 @@ def handle_link(message) -> None:
             audio_path, title, duration = download_audio(
                 url,
                 temp_path,
-                cookie_data=YOUTUBE_COOKIES,
+                cookie_path=COOKIE_FILE_PATH,
             )
             original_size = audio_path.stat().st_size
 
