@@ -38,6 +38,7 @@ def get_required_env(name: str) -> str:
 
 
 TELEGRAM_BOT_TOKEN = get_required_env("TELEGRAM_BOT_TOKEN")
+YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES")
 # Create the Telegram bot client.
 bot = telebot.TeleBot(
     TELEGRAM_BOT_TOKEN,
@@ -45,22 +46,6 @@ bot = telebot.TeleBot(
     num_threads=4,
 )
 download_lock = threading.Lock()
-COOKIE_DIR = Path(__file__).resolve().parent / "cookies"
-COOKIE_FILE_PATH = COOKIE_DIR / "cookies.txt"
-
-
-def ensure_cookie_file() -> Path:
-    COOKIE_DIR.mkdir(parents=True, exist_ok=True)
-    logger.debug("Проверка/создание папки cookies: %s", COOKIE_DIR)
-    if not COOKIE_FILE_PATH.exists():
-        COOKIE_FILE_PATH.touch()
-        logger.debug("Создан файл cookies.txt: %s", COOKIE_FILE_PATH)
-    else:
-        logger.debug("Файл cookies.txt уже существует: %s", COOKIE_FILE_PATH)
-    return COOKIE_FILE_PATH
-
-
-ensure_cookie_file()
 
 
 # Validate the input as a single YouTube URL and reject malformed or unsupported links.
@@ -186,7 +171,7 @@ def notify(chat_id: int, text: str) -> None:
 def download_audio(
     url: str,
     output_dir: Path,
-    cookie_path: Optional[Path] = None,
+    cookie_data: Optional[str] = None,
 ) -> Tuple[Path, str, Optional[int]]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -211,9 +196,11 @@ def download_audio(
             },
         },
     }
-    if cookie_path is not None:
+    if cookie_data and cookie_data.strip():
+        cookie_path = output_dir / "cookies.txt"
+        cookie_path.write_text(cookie_data, encoding="utf-8")
         options["cookiefile"] = str(cookie_path)
-        logger.debug("Используются cookies для загрузки: %s", cookie_path)
+        logger.debug("Используются cookies из YOUTUBE_COOKIES")
 
     logger.info("Начинаю загрузку аудиодорожки из видео: %s", url)
     with yt_dlp.YoutubeDL(options) as downloader:
@@ -271,8 +258,6 @@ def handle_link(message) -> None:
         bot.send_message(message.chat.id, str(error))
         return
 
-    cookie_path = ensure_cookie_file()
-
     lock_acquired = download_lock.acquire(blocking=False)
     if not lock_acquired:
         bot.send_message(
@@ -290,7 +275,7 @@ def handle_link(message) -> None:
             audio_path, title, duration = download_audio(
                 url,
                 temp_path,
-                cookie_path=cookie_path,
+                cookie_data=YOUTUBE_COOKIES,
             )
             original_size = audio_path.stat().st_size
 
