@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -7,7 +8,6 @@ from tempfile import TemporaryDirectory
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
-import imageio_ffmpeg
 import telebot
 import yt_dlp
 from yt_dlp.utils import DownloadError
@@ -118,12 +118,12 @@ def format_file_size(size_bytes: int) -> str:
 
 # Re-encode oversized audio as MP3 and verify that it fits Telegram's limit.
 def compress_audio(audio_path: Path, duration: Optional[int]) -> Path:
-    try:
-        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-    except RuntimeError as error:
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path is None:
         raise RuntimeError(
-            "Не удалось найти ffmpeg для сжатия аудио."
-        ) from error
+            "Для сжатия аудио требуется установленный ffmpeg, "
+            "добавленный в PATH."
+        )
 
     output_path = audio_path.with_name(f"{audio_path.stem}_compressed.mp3")
     max_bitrate = 128
