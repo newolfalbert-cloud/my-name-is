@@ -172,7 +172,7 @@ def notify(chat_id: int, text: str) -> None:
         logger.exception("Не удалось отправить уведомление")
 
 
-# Download the lowest-quality audio-only format.
+# Download the lowest-quality Russian audio-only format.
 def download_audio(
     url: str,
     output_dir: Path,
@@ -181,7 +181,7 @@ def download_audio(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     options = {
-        "format": "worst*[vcodec=none]",
+        "format": "worst*[vcodec=none][language^=ru]",
         "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": False,
@@ -438,8 +438,8 @@ def handle_link(message) -> None:
         logger.exception("Ошибка yt-dlp")
         notify(
             message.chat.id,
-            "Не удалось скачать аудио. Видео может быть недоступно "
-            "или не иметь аудиодорожки.",
+            "Не удалось скачать аудиодорожку на русском языке. "
+            "Проверьте доступность видео и наличие русской аудиодорожки.",
         )
 
     except (ValueError, RuntimeError) as error:
