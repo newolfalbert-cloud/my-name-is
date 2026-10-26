@@ -44,7 +44,8 @@ try:
         int(TELEGRAM_ADMIN_ID_VALUE) if TELEGRAM_ADMIN_ID_VALUE else None
     )
 except ValueError as error:
-    raise SystemExit("TELEGRAM_ADMIN_ID должен быть числовым Telegram ID.") from error
+    raise SystemExit(
+        "TELEGRAM_ADMIN_ID должен быть числовым Telegram ID.") from error
 # Create the Telegram bot client.
 bot = telebot.TeleBot(
     TELEGRAM_BOT_TOKEN,
@@ -192,6 +193,7 @@ def download_audio(
         "postprocessors": [],
         "extractor_args": {
             "youtube": {
+                "lang": ["ru"],
                 "player_client": [
                     "default",
                     "web_embedded",
@@ -307,7 +309,8 @@ def request_cookies(message) -> None:
         )
         return
     if message.from_user.id != TELEGRAM_ADMIN_ID:
-        bot.send_message(message.chat.id, "Команда доступна только владельцу бота.")
+        bot.send_message(
+            message.chat.id, "Команда доступна только владельцу бота.")
         return
 
     prompt = bot.send_message(
@@ -323,7 +326,8 @@ def receive_cookies(message) -> None:
         TELEGRAM_ADMIN_ID is None
         or message.from_user.id != TELEGRAM_ADMIN_ID
     ):
-        bot.send_message(message.chat.id, "Команда доступна только владельцу бота.")
+        bot.send_message(
+            message.chat.id, "Команда доступна только владельцу бота.")
         return
 
     if message.content_type == "text" and message.text.strip() == "/cancel":
@@ -358,7 +362,8 @@ def receive_cookies(message) -> None:
 
         save_cookie_data(cookie_data)
     except (UnicodeDecodeError, ValueError) as error:
-        bot.send_message(message.chat.id, f"Не удалось сохранить cookies: {error}")
+        bot.send_message(
+            message.chat.id, f"Не удалось сохранить cookies: {error}")
         return
     except Exception:
         logger.exception("Не удалось сохранить cookies")
